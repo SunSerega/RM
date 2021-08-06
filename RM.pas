@@ -1,135 +1,135 @@
-﻿## uses System, System.Runtime.InteropServices, PABCSystem;
+﻿
 
-(**
-[Flags]
-public enum AssocF
-{
-    None = 0,
-    Init_NoRemapCLSID = 0x1,
-    Init_ByExeName = 0x2,
-    Open_ByExeName = 0x2,
-    Init_DefaultToStar = 0x4,
-    Init_DefaultToFolder = 0x8,
-    NoUserSettings = 0x10,
-    NoTruncate = 0x20,
-    Verify = 0x40,
-    RemapRunDll = 0x80,
-    NoFixUps = 0x100,
-    IgnoreBaseClass = 0x200,
-    Init_IgnoreUnknown = 0x400,
-    Init_Fixed_ProgId = 0x800,
-    Is_Protocol = 0x1000,
-    Init_For_File = 0x2000
-}
+{$reference PresentationFramework.dll}
+{$reference PresentationCore.dll}
+{$reference WindowsBase.dll}
+{$apptype windows}
 
-public enum AssocStr
-{
-    Command = 1,
-    Executable,
-    FriendlyDocName,
-    FriendlyAppName,
-    NoOpen,
-    ShellNewValue,
-    DDECommand,
-    DDEIfExec,
-    DDEApplication,
-    DDETopic,
-    InfoTip,
-    QuickTip,
-    TileInfo,
-    ContentType,
-    DefaultIcon,
-    ShellExtension,
-    DropTarget,
-    DelegateExecute,
-    Supported_Uri_Protocols,
-    ProgID,
-    AppID,
-    AppPublisher,
-    AppIconReference,
-    Max
-}
-(**)
+uses System;
+uses System.Windows;
+uses System.Windows.Controls;
+uses PABCSystem;
 
-function AssocQueryString(
-    flags, str_type: UInt32;
-    pszAssoc, pszExtra: string;
-    [Out] pszOut: StringBuilder;
-    var pcchOut: UInt32
-): UInt32;
-external 'Shlwapi.dll';
+uses ExtAnalysis;
 
-(**
-  static string AssocQueryString(AssocStr association, string extension)
-{
-    const int S_OK = 0;
-    const int S_FALSE = 1;
-
-    uint length = 0;
-    uint ret = AssocQueryString(AssocF.None, association, extension, null, null, ref length);
-    if (ret != S_FALSE)
-    {
-        throw new InvalidOperationException("Could not determine associated string");
-    }
-
-    var sb = new StringBuilder((int)length); // (length-1) will probably work too as the marshaller adds null termination
-    ret = AssocQueryString(AssocF.None, association, extension, null, sb, ref length);
-    if (ret != S_OK)
-    {
-        throw new InvalidOperationException("Could not determine associated string"); 
-    }
-
-    return sb.ToString();
-}
-(**)
-function GetExecStr(ext: string): string;
-const S_OK = 0;
-const S_FALSE = 1;
-const str_type = 1; // Command
-begin
-  var lenght: UInt32 := 0;
-  
-  var ec := AssocQueryString(0, str_type, ext, nil, nil, lenght);
-  if ec <> S_FALSE then raise new System.InvalidOperationException($'Error code: {ec}');
-  
-  var sb := new StringBuilder(lenght);
-  ec := AssocQueryString(0, str_type, ext, nil, sb, lenght);
-  if ec <> S_OK then raise new System.InvalidOperationException($'Error code: {ec}');
-  
-  Result := sb.ToString;
-end;
-
-
-//GetExecStr('.mp4').Println;
-//exit;
-
-var files := EnumerateAllFiles(ReadlnString).Where(fname->
-begin
-  Result := false;
-  var ext := System.IO.Path.GetExtension(fname);
-  if ext.Length=0 then exit;
-  try
-    var str := GetExecStr(ext);
-    Result := str.ToLower.Contains('mpv');
-    //if not Result then fname.Println;
-  except
-    on e: Exception do
+type
+  ButtonSwitch = sealed class(Button)
+    public state := false;
+    
+    public constructor(im1, im2: string);
     begin
-      Writeln(fname);
-      Writeln(e);
+      
+      var im := new Image;
+      self.Content := im;
+      
+      var ims1 := System.Windows.Media.Imaging.BitmapFrame.Create(GetResourceStream(im1));
+      var ims2 := System.Windows.Media.Imaging.BitmapFrame.Create(GetResourceStream(im2));
+      
+      im.Source := ims1;
+      self.Click += (o,e)->
+      begin
+        state := not state;
+        im.Source := state ? ims2 : ims1;
+      end;
+      
     end;
+    private constructor := raise new System.InvalidOperationException;
+    
   end;
-end).ToArray;
-var c := files.Count;
-try
-  while true do
-    System.Diagnostics.Process.Start(
-      files.ElementAt(Random(c)
-    )).WaitForExit;
-except
-  on e: Exception do
+  
+begin
+  var MainWindow := new Window;
+  
+  var g := new Grid;
+  MainWindow.Content := g;
+  g.ColumnDefinitions.Add(new ColumnDefinition);
+  g.ColumnDefinitions.Add(new ColumnDefinition);
+  
+  {$resource im_cycle1.bmp}
+  {$resource im_cycle2.bmp}
+  var b1 := new ButtonSwitch('im_cycle1.bmp', 'im_cycle2.bmp');
+  g.Children.Add(b1);
+  Grid.SetColumn(b1, 0);
+  
+  {$resource im_random1.bmp}
+  {$resource im_random2.bmp}
+  var b2 := new ButtonSwitch('im_random1.bmp', 'im_random2.bmp');
+  g.Children.Add(b2);
+  Grid.SetColumn(b2, 1);
+  
+  var active_files := new string[0];
+  
+  MainWindow.AllowDrop := true;
+  MainWindow.DragOver += (o,e)->
   begin
-    Writeln(e);
-    Readln;
+    if not e.Data.GetDataPresent('FileNameW') then
+    begin
+      e.Effects := DragDropEffects.None;
+    end else
+      e.Effects := DragDropEffects.Link;
+    e.Handled := true;
   end;
-end;
+  MainWindow.Drop += (o,e)->
+  begin
+    var names := e.Data.GetData('FileDrop') as array of string;
+    var files := new List<string>;
+    foreach var name in names do
+      if System.IO.File.Exists(name) then
+        files += name else
+        files.AddRange(EnumerateAllFiles(name));
+    files.Count.Println;
+    files.RemoveAll(fname->
+    try
+      Result := not GetExecStr(System.IO.Path.GetExtension(fname)).Contains('\mpv.exe');
+    except
+      on e: Exception do
+      begin
+        Writeln(fname);
+        Writeln(e);
+        Result := true;
+      end;
+    end);
+    active_files := files.ToArray;
+    e.Handled := true;
+  end;
+  
+  System.Threading.Thread.Create(()->
+  begin
+    var last_id := -1;
+    
+    while true do
+    try
+      var files := active_files.ToArray;
+      
+      if files.Length=0 then
+      begin
+        Sleep(10);
+        continue;
+      end;
+      
+      var curr_id: integer;
+      if b1.state then
+        curr_id := last_id else
+      if b2.state then
+        curr_id := (last_id+1) mod files.Length else
+        curr_id := Random(files.Length);
+      curr_id.Clamp(0, files.Length-1);
+      last_id := curr_id;
+      
+      System.Diagnostics.Process.Start(
+        files[curr_id]
+      ).WaitForExit;
+      
+    except
+      on e: Exception do
+      begin
+        Writeln(e);
+        System.Media.SystemSounds.Exclamation.Play;
+        Readln;
+      end;
+    end;
+    
+  end).Start;
+  
+  Halt(Application.Create.Run(MainWindow));
+end.
