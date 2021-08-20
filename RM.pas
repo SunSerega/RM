@@ -58,6 +58,27 @@ begin
   Grid.SetColumn(b2, 1);
   
   var active_files := new string[0];
+  var set_active_files := procedure(names: sequence of string)->
+  begin
+    var files := new List<string>;
+    foreach var name in names do
+      if System.IO.File.Exists(name) then
+        files += name else
+        files.AddRange(EnumerateAllFiles(name));
+    files.RemoveAll(fname->
+    try
+      Result := not GetExecStr(System.IO.Path.GetExtension(fname)).Contains('\mpv.exe');
+    except
+      on e: Exception do
+      begin
+        Writeln(fname);
+        Writeln(e);
+        Result := true;
+      end;
+    end);
+    active_files := files.ToArray;
+  end;
+  set_active_files(CommandLineArgs.Where(fname->System.IO.Directory.Exists(fname) or System.IO.File.Exists(fname)));
   
   MainWindow.AllowDrop := true;
   MainWindow.DragOver += (o,e)->
@@ -71,25 +92,7 @@ begin
   end;
   MainWindow.Drop += (o,e)->
   begin
-    var names := e.Data.GetData('FileDrop') as array of string;
-    var files := new List<string>;
-    foreach var name in names do
-      if System.IO.File.Exists(name) then
-        files += name else
-        files.AddRange(EnumerateAllFiles(name));
-    files.Count.Println;
-    files.RemoveAll(fname->
-    try
-      Result := not GetExecStr(System.IO.Path.GetExtension(fname)).Contains('\mpv.exe');
-    except
-      on e: Exception do
-      begin
-        Writeln(fname);
-        Writeln(e);
-        Result := true;
-      end;
-    end);
-    active_files := files.ToArray;
+    set_active_files(e.Data.GetData('FileDrop') as array of string);
     e.Handled := true;
   end;
   
@@ -113,7 +116,7 @@ begin
       if b2.state then
         curr_id := (last_id+1) mod files.Length else
         curr_id := Random(files.Length);
-      curr_id.Clamp(0, files.Length-1);
+      curr_id := curr_id.Clamp(0, files.Length-1);
       last_id := curr_id;
       
       System.Diagnostics.Process.Start(
