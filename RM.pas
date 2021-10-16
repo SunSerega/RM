@@ -39,6 +39,7 @@ type
   
 begin
   var MainWindow := new Window;
+//  AllocConsole;
   
   var g := new Grid;
   MainWindow.Content := g;
@@ -67,16 +68,22 @@ begin
         files.AddRange(EnumerateAllFiles(name));
     files.RemoveAll(fname->
     try
-      Result := not GetExecStr(System.IO.Path.GetExtension(fname)).Contains('\mpv.exe');
+      Result := false;
+      var ext := System.IO.Path.GetExtension(fname);
+      if ext in |'.db'| then exit;
+      Result := not GetExecStr(ext).Contains('\mpv.exe');
     except
       on e: Exception do
       begin
-        Writeln(fname);
-        Writeln(e);
+        MessageBox.Show(e.ToString, fname);
         Result := true;
       end;
     end);
-    active_files := files.ToArray;
+//    MessageBox.Show(System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift).ToString);
+    if System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift) then
+      active_files := active_files + files.ToArray else
+      active_files := files.ToArray;
+//    MessageBox.Show(active_files.JoinToString(#10));
   end;
   set_active_files(CommandLineArgs.Where(fname->System.IO.Directory.Exists(fname) or System.IO.File.Exists(fname)));
   
@@ -100,6 +107,10 @@ begin
   begin
     var last_id := -1;
     
+    {$reference System.Speech.dll}
+    var speaker := new System.Speech.Synthesis.SpeechSynthesizer;
+    speaker.SetOutputToDefaultAudioDevice;
+    
     while true do
     try
       var files := active_files.ToArray;
@@ -119,16 +130,29 @@ begin
       curr_id := curr_id.Clamp(0, files.Length-1);
       last_id := curr_id;
       
-      System.Diagnostics.Process.Start(
-        files[curr_id]
-      ).WaitForExit;
+      var fname := files[curr_id];
+      MainWindow.Dispatcher.Invoke(()->begin MainWindow.Title := fname end);
+      speaker.Speak(System.IO.Path.GetFileNameWithoutExtension(fname));
+      
+      var executable := GetExecStr(System.IO.Path.GetExtension(fname)).Remove(' "%1"').Remove('"');
+      var args := $'"{fname}" "--window-minimized=yes"';
+      var proc := System.Diagnostics.Process.Start(executable, args);
+      proc.WaitForExit;
+      MainWindow.Dispatcher.Invoke(()->begin MainWindow.Title := '%Switching%' end);
+      case proc.ExitCode of
+        0: continue;
+        1: MessageBox.Show('Error initializing mpv. This is also returned if unknown options are passed to mpv.');
+        2: MessageBox.Show('The file passed to mpv couldn''t be played. This is somewhat fuzzy: currently, playback of a file is considered to be successful if initialization was mostly successful, even if playback fails immediately after initialization.');
+        3: MessageBox.Show('There were some files that could be played, and some files which couldn''t (using the definition of success from above).');
+        4: MessageBox.Show('Quit due to a signal, Ctrl+c in a VO window (by default), or from the default quit key bindings in encoding mode.');
+        else MessageBox.Show($'MPV error code: {proc.ExitCode}');
+      end;
       
     except
       on e: Exception do
       begin
-        Writeln(e);
         System.Media.SystemSounds.Exclamation.Play;
-        Readln;
+        MessageBox.Show(e.ToString);
       end;
     end;
     
