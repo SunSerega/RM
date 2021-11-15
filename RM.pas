@@ -5,6 +5,20 @@
 {$reference WindowsBase.dll}
 {$apptype windows}
 
+{$region TODO}
+
+//TODO Папка должно в ref содержать все свои файлы, даже если обратного ref небыло
+// - Тогда будет нормально работать увеличение частоты при тыке
+// - А ещё можно будет не делать словарь папок-визуализаций
+
+//TODO Не пересоздавать всё визуальное дерево
+// - Если кинули C:/A ; C:/A/B/C ; C:/A/B
+// --- Тогда надо будет вставить промежуточную папку в визуальное дерево
+// - То же самое если C:/A/B/C ; C:/A/B ; C:/A
+// --- Только теперь заменя идёт между root и его первой дочеренной папкой
+
+{$endregion TODO}
+
 uses System;
 uses System.Windows;
 uses System.Windows.Media;
@@ -128,10 +142,10 @@ type
     begin
       foreach var prev in self.Enmr do
       begin
-        var next := prev.next;
+        var next := prev.Enmr.Skip(1).FirstOrDefault ?? prev;
         if prev.f.fname = f.fname then
         begin
-          f.weight := prev.f.weight.Value + f.weight.Value;
+          f.UpdateWeight(prev.f.weight.Value);
           prev.Remove;
           
           Result := if next=prev then
@@ -141,9 +155,17 @@ type
           
           exit;
         end;
-        if 2 > ord(prev.f.fname >= next.f.fname) + ord(prev.f.fname < f.fname) + ord(f.fname < next.f.fname) then continue;
-        Result := new FileListNode(prev, next, f);
-        exit;
+//        var v1 := prev.f.fname < next.f.fname;
+//        var v2 := prev.f.fname < f.fname;
+//        var v3 := f.fname < next.f.fname;
+        if prev.f.fname < next.f.fname
+          ? (prev.f.fname < f.fname) and (f.fname < next.f.fname)
+          : (prev.f.fname < f.fname) or (f.fname < next.f.fname)
+          then
+        begin
+          Result := new FileListNode(prev, next, f);
+          exit;
+        end;
       end;
       if not self.IsRemoved then raise new System.InvalidOperationException;
       Result := new FileListNode(f);
@@ -328,7 +350,7 @@ type
         var fname := full_fname.SubString(base_path.Length+1);
         
         InvokeFileSwitch(fname);
-        speaker.Speak(fname);
+        speaker.Speak(System.IO.Path.ChangeExtension(fname,nil).Replace('\', ' - '));
         
         PlayFile(full_fname);
         InvokeFileSwitch('%Switching%');
@@ -565,6 +587,7 @@ type
     private weight_box := new TextBlock;
     
     public event WeightChanged: integer->();
+    public event ResetRequested: ()->();
     
     public constructor(char_set: string; name: string);
     begin
@@ -597,6 +620,19 @@ type
         WeightChanged(delta);
         e.Handled := true;
       end;
+      
+      var reset_button := new Button;
+      self.Children.Insert(2, reset_button);
+      reset_button.Width := 16;
+      reset_button.Height := 16;
+      reset_button.Margin := new Thickness(0,0,5,0);
+      reset_button.Click += (o,e)->ResetRequested();
+      
+      var reset_button_im := new System.Windows.Shapes.Rectangle;
+      reset_button.Content := reset_button_im;
+      reset_button_im.Width := 7;
+      reset_button_im.Height := 7;
+      reset_button_im.Fill := Brushes.Red;
       
       var body_title := new TextBlock;
       self.Children.Add(body_title);
@@ -636,6 +672,11 @@ type
         if f.weight=nil then
           RM.FilesUpdated else
           RM.WeightsUpdated;
+      end;
+      header.ResetRequested += ()->
+      begin
+        f.UpdateWeight(-f.weight.Value+1);
+        RM.WeightsUpdated;
       end;
       
     end;
@@ -687,30 +728,19 @@ type
             raise new System.InvalidOperationException;
         end;
         
-        title_bar.MouseUp += (o,e)->
-        begin
-          path.display_content := not path.display_content;
-          UpdateBodyShown;
-        end;
-        UpdateBodyShown += ()->title_bar.UpdateChar(ord(path.display_content));
-        
-        var reset_button := new Button;
-        title_bar.Children.Insert(2, reset_button);
-        reset_button.Width := 16;
-        reset_button.Height := 16;
-        reset_button.Margin := new Thickness(0,0,5,0);
-        reset_button.Click += (o,e)->
+        title_bar.ResetRequested += ()->
         begin
           foreach var f in path.ref.ToArray do
             f.UpdateWeight(-f.weight.Value+1);
           RM.WeightsUpdated;
         end;
         
-        var reset_button_im := new System.Windows.Shapes.Rectangle;
-        reset_button.Content := reset_button_im;
-        reset_button_im.Width := 7;
-        reset_button_im.Height := 7;
-        reset_button_im.Fill := Brushes.Red;
+        title_bar.MouseUp += (o,e)->
+        begin
+          path.display_content := not path.display_content;
+          UpdateBodyShown;
+        end;
+        UpdateBodyShown += ()->title_bar.UpdateChar(ord(path.display_content));
         
       end;
       
@@ -880,7 +910,12 @@ begin
 //  RM.AddName('C:\0Music\2Special\Rob Gasser\to sort\[20210815] Rob Gasser - Pieces.mp4');
 //  RM.AddName('C:\0Music\2Special\Rob Gasser\to sort');
 //  RM.AddName('C:\0Music\2Special\Rob Gasser');
+
+//  RM.AddName('C:\0Music\2Special\Perturbator\The Uncanny Valley');
+//  RM.files.Enmr.First.f.Remove;
+//  RM.AddName('C:\0Music\2Special\Perturbator\The Uncanny Valley');
   
+  RM.FileSwitch += fname->MainWindow.Dispatcher.Invoke(()->(MainWindow.Title := fname));
   RM.StartPlaying;
   
   Halt(Application.Create.Run(MainWindow));
