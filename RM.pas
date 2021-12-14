@@ -222,6 +222,7 @@ type
     
     public static cycle := new BoolValue(false);
     public static choose_rng := new BoolValue(true);
+    public static start_volume := 100;
     
     public static event FileSwitch: string->();
     private static procedure InvokeFileSwitch(name: string);
@@ -303,7 +304,7 @@ type
     end else
       MessageBox.Show(name, 'Value not recognized as file/folder');
     
-    static procedure StartPlaying := System.Threading.Thread.Create(()->
+    public static procedure StartPlaying := System.Threading.Thread.Create(()->
     begin
       {$reference System.Speech.dll}
       var speaker := new System.Speech.Synthesis.SpeechSynthesizer;
@@ -364,11 +365,11 @@ type
       
     end).Start;
     
-    static procedure PlayFile(fname: string);
+    public static procedure PlayFile(fname: string);
     begin
       
       var executable := GetExecStr(System.IO.Path.GetExtension(fname)).Remove(' "%1"').Remove('"');
-      var args := $'"{fname}" "--window-minimized=yes"';
+      var args := $'"{fname}" "--window-minimized=yes" --volume={start_volume}';
       var proc := System.Diagnostics.Process.Start(executable, args);
       proc.WaitForExit;
       case proc.ExitCode of
@@ -576,6 +577,38 @@ type
     
   end;
   
+  StartVolumeSlider = sealed class(DockPanel)
+    
+    public constructor;
+    begin
+      
+      var curr_volume_text := new TextBlock;
+      self.Children.Add(curr_volume_text);
+      DockPanel.SetDock(curr_volume_text, Dock.Top);
+      curr_volume_text.HorizontalAlignment := System.Windows.HorizontalAlignment.Center;
+      
+      var s := new Slider;
+      self.Children.Add(s);
+      s.Minimum := 0;
+      s.Maximum := 100;
+      
+      s.TickFrequency := 1;
+      s.IsSnapToTickEnabled := true;
+      
+      s.Width := (s.Maximum-s.Minimum)*2;
+      s.VerticalAlignment := System.Windows.VerticalAlignment.Center;
+      
+      s.ValueChanged += (o,e)->
+      begin
+        RM.start_volume := e.NewValue.Round;
+        curr_volume_text.Text := RM.start_volume+'%';
+      end;
+      s.Value := RM.start_volume;
+      
+    end;
+    
+  end;
+  
   {$endregion Other Button's}
   
   {$region FileDisplay}
@@ -583,7 +616,11 @@ type
   DisplayHeader = sealed class(StackPanel)
     private char_set: string;
     private char_box := new TextBlock;
+    
     private weight_box := new TextBlock;
+    
+    private rel_weight_box := new ProgressBar;
+    private rel_weight_box_text := new TextBlock;
     
     public event WeightChanged: integer->();
     public event ResetRequested: ()->();
@@ -620,6 +657,18 @@ type
         e.Handled := true;
       end;
       
+      var rel_weight_box_g := new Grid;
+      self.Children.Add(rel_weight_box_g);
+      rel_weight_box_g.Width := 50;
+      rel_weight_box_g.Margin := new Thickness(0,0,5,0);
+      
+      rel_weight_box_g.Children.Add(rel_weight_box);
+      rel_weight_box.Minimum := 0;
+      rel_weight_box.Maximum := 1;
+      
+      rel_weight_box_g.Children.Add(rel_weight_box_text);
+      rel_weight_box_text.HorizontalAlignment := System.Windows.HorizontalAlignment.Center;
+      
       var reset_button := new Button;
       self.Children.Insert(2, reset_button);
       reset_button.Width := 16;
@@ -645,8 +694,14 @@ type
     public procedure UpdateChar(ind: integer) :=
     char_box.Text := char_set[ind+1];
     
-    public procedure UpdateWeight(w: integer) :=
-    weight_box.Text := w.ToString('D3');
+    public procedure UpdateWeight(w: integer; rel_w: real);
+    begin
+      weight_box.Text := w.ToString('D3');
+      
+      rel_weight_box.Value := rel_w;
+      rel_weight_box_text.Text := rel_w.ToString('f3');
+      
+    end;
     
   end;
   
@@ -664,7 +719,6 @@ type
       header := new DisplayHeader('•', f.fname.SubString(parent_path.Length));
       self.Content := header;
       header.UpdateChar(0);
-      header.UpdateWeight(f.weight.Value);
       header.WeightChanged += delta->
       begin
         f.UpdateWeight(delta);
@@ -681,8 +735,8 @@ type
     end;
     private constructor := raise new System.InvalidOperationException;
     
-    public procedure UpdateWeights :=
-    header.UpdateWeight(f.weight.Value);
+    public procedure UpdateWeight(max_weight_sum: integer) :=
+    header.UpdateWeight(f.weight.Value, f.weight.Value/max_weight_sum);
     
   end;
   
@@ -708,7 +762,6 @@ type
         //TODO Если поменять parent_path - это не обновится
         title_bar := new DisplayHeader('►▼', path.path.SubString(parent_path.Length).TrimEnd('\'));
         self.Children.Add(title_bar);
-        title_bar.UpdateWeight(path.GetWeight);
         title_bar.WeightChanged += delta->
         begin
           var full_update := false;
@@ -796,14 +849,41 @@ type
       files_panel.Children.Add(sub_display);
     end;
     
-    public procedure UpdateWeights;
+    private weight_sum_lock: object;
+    private weight_sum_cache := default(integer?);
+    private function GetWeightSum(u_lock: object): integer;
+    begin
+      if (weight_sum_lock=u_lock) and (weight_sum_cache<>nil) then
+      begin
+        Result := weight_sum_cache.Value;
+        exit;
+      end;
+      
+      foreach var sub_dir in sub_dirs.Values do
+        Result += sub_dir.GetWeightSum(u_lock);
+      foreach var f in files.Values do
+        Result += f.f.weight.Value;
+      
+      weight_sum_cache := Result;
+    end;
+    
+    public procedure UpdateWeights(u_lock: object; max_weight_sum: integer);
     begin
       if title_bar<>nil then
-        title_bar.UpdateWeight(path.GetWeight);
+        title_bar.UpdateWeight(path.GetWeight, self.GetWeightSum(u_lock)/max_weight_sum);
+      
+      max_weight_sum := (
+        sub_dirs.Values.Select(sub_dir->sub_dir.GetWeightSum(u_lock))
+      +
+        files.Values.Select(f->f.f.weight.Value)
+      ).DefaultIfEmpty(0).Max;
+      if max_weight_sum=0 then exit;
+      
       foreach var sub_dir in sub_dirs.Values do
-        sub_dir.UpdateWeights;
+        sub_dir.UpdateWeights(u_lock, max_weight_sum);
       foreach var f in files.Values do
-        f.UpdateWeights;
+        f.UpdateWeight(max_weight_sum);
+      
     end;
     
   end;
@@ -818,6 +898,9 @@ type
       root_path.display_content := true;
       var root_display := new FolderDisplay(nil, root_path);
       self.Content := root_display;
+      
+      var UpdateRootWeight := procedure->
+      root_display.UpdateWeights(new object, 0);
       
       var TODO := 0; //TODO Полное пересоздание - да ещё и на каждый .AddName
       RM.FilesUpdated += ()->
@@ -846,9 +929,10 @@ type
         foreach var f in files.OrderBy(f->f.fname) do
           paths_display[f.ref.FirstOrDefault??root_path].AddFile(f);
         
+        UpdateRootWeight;
       end;
       
-      RM.WeightsUpdated += ()->root_display.UpdateWeights();
+      RM.WeightsUpdated += UpdateRootWeight;
       
     end;
     
@@ -872,6 +956,7 @@ begin
   settings_panel.Children.Add(new RngButton);
   settings_panel.Children.Add(new SaveButton);
   settings_panel.Children.Add(new LoadButton);
+  settings_panel.Children.Add(new StartVolumeSlider);
   
   var files_display := new FileDisplayContainer;
   dp.Children.Add(files_display);
