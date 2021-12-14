@@ -309,7 +309,6 @@ type
       var speaker := new System.Speech.Synthesis.SpeechSynthesizer;
       speaker.SetOutputToDefaultAudioDevice;
       
-      var last: FileListNode;
       while true do
       try
         var files: array of FileListNode;
@@ -323,12 +322,12 @@ type
         
         var curr := default(FileListNode);
         if cycle.val then
-          curr := last else
+          curr := files[0] else
         begin
           if not choose_rng.val then
           begin
-            curr := files[0];
-            if curr=last then curr := curr.next;
+            curr := if files[0]=RM.files then
+              files[1] else files[0];
           end else
           begin
             var weight := Random(files.Sum(n->n.f.weight.Value));
@@ -342,8 +341,8 @@ type
               weight -= n.f.weight.Value;
             end;
           end;
-          last := curr;
         end;
+        RM.files := curr;
         
         var full_fname := curr.f.fname;
         var base_path := curr.f.base_path;
