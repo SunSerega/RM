@@ -222,7 +222,9 @@ type
     
     public static cycle := new BoolValue(false);
     public static choose_rng := new BoolValue(true);
+    
     public static start_volume := 100;
+    public static event StartVolumeUpdated: ()->();
     
     public static event FileSwitch: string->();
     private static procedure InvokeFileSwitch(name: string);
@@ -231,30 +233,94 @@ type
       if FileSwitch<>nil then FileSwitch(name);
     end;
     
+    public const RMData_version = 1;
+    public const RMData_ct_file: byte = 1;
+    public const RMData_ct_volume: byte = 2;
     public static procedure SaveRMData(str: System.IO.Stream);
     begin
       var bw := new System.IO.BinaryWriter(str);
+      bw.Write(-1);
+      bw.Write(RMData_version);
       foreach var n in files.Enmr do
       begin
         var f := n.f;
+        bw.Write(RMData_ct_file);
         bw.Write(f.base_path);
         bw.Write(f.fname.SubString(f.base_path.Length));
         bw.Write(f.weight.Value);
       end;
+      bw.Write(RMData_ct_volume);
+      bw.Write(start_volume);
       bw.Close;
     end;
     public static procedure LoadRMData(str: System.IO.Stream);
     begin
       var br := new System.IO.BinaryReader(str);
       var last := files;
-      while br.BaseStream.Position<br.BaseStream.Length do
+      
+      if br.ReadInt32<>-1 then
       begin
-        var base_path := br.ReadString;
-        var f := new WeightedFile(base_path, base_path+br.ReadString);
-        f.weight := br.ReadInt32;
-        lock RM.files_lock do
-          last := last.Insert(f);
+        // Legacy
+        br.BaseStream.Position := 0;
+        
+        while br.BaseStream.Position<br.BaseStream.Length do
+        try
+          var base_path := br.ReadString;
+          var f := new WeightedFile(base_path, base_path+br.ReadString);
+          f.weight := br.ReadInt32;
+          lock RM.files_lock do
+            last := last.Insert(f);
+        except
+          on e: Exception do
+          begin
+            MessageBox.Show(e.ToString);
+            break;
+          end;
+        end;
+        
+      end else
+      begin
+        var data_version := br.ReadInt32;
+        case data_version of
+          
+          RMData_version:
+          // Current
+          while br.BaseStream.Position<br.BaseStream.Length do
+          try
+            var ct := br.ReadByte;
+            
+            case ct of
+              
+              RMData_ct_file:
+              begin
+                var base_path := br.ReadString;
+                var f := new WeightedFile(base_path, base_path+br.ReadString);
+                f.weight := br.ReadInt32;
+                lock RM.files_lock do
+                  last := last.Insert(f);
+              end;
+              
+              RMData_ct_volume:
+              begin
+                start_volume := br.ReadInt32;
+                StartVolumeUpdated;
+              end;
+              
+              else raise new System.InvalidOperationException($'Content type {ct} is not defined');
+            end;
+            
+          except
+            on e: Exception do
+            begin
+              MessageBox.Show(e.ToString);
+              break;
+            end;
+          end;
+          
+          else raise new System.NotSupportedException($'Version {data_version} is not supported');
+        end;
       end;
+      
       br.Close;
       FilesUpdated;
     end;
@@ -604,6 +670,7 @@ type
         curr_volume_text.Text := RM.start_volume+'%';
       end;
       s.Value := RM.start_volume;
+      RM.StartVolumeUpdated += ()->(s.Value := RM.start_volume);
       
     end;
     
