@@ -34,15 +34,17 @@ type
   {$region WeightedData}
   
   WeightedPath = sealed partial class
+    static All := new Dictionary<string, WeightedPath>;
     weight: integer? := nil;
+    path: string;
+    removed := new HashSet<string>;
   end;
   WeightedFile = sealed partial class
     weight: integer? := 1;
+    base_path, fname: string;
   end;
   
   WeightedPath = sealed partial class
-    static All := new Dictionary<string, WeightedPath>;
-    path: string;
     ref := new HashSet<WeightedFile>;
     
     display_content := false;
@@ -67,29 +69,40 @@ type
     begin
       self.weight := nil;
       self.ref += f;
+      self.removed.Remove(f.fname);
     end;
     
     procedure RemoveRef(f: WeightedFile);
     begin
       if not self.ref.Remove(f) then raise new System.InvalidOperationException;
       self.weight := nil;
-      if self.ref.Count<>0 then exit;
-      WeightedPath.All.Remove(self.path);
+      if self.ref.Count=0 then
+      begin
+        WeightedPath.All.Remove(self.path);
+        exit;
+      end;
+      self.removed += f.fname;
+    end;
+    
+    function TryAddRemoved(rem: string): boolean;
+    begin
+      Result := false;
+      if ref.Any(f->f.fname=rem) then exit;
+      Result := self.removed.Add(rem);
     end;
     
   end;
   WeightedFile = sealed partial class
-    base_path, fname: string;
     ref: array of WeightedPath;
     
     constructor(base_path, fname: string);
     begin
       self.base_path := base_path;
       self.fname := fname;
-      var paths := fname.Substring(base_path.Length).Split('\')[1:^1];
+      var paths := fname.Substring(base_path.Length).TrimStart('\').Split('\')[:^1];
       var ref_sb := new StringBuilder(fname.Length);
       ref_sb += base_path;
-      ref_sb += '\';
+      if ref_sb.Length<>0 then ref_sb += '\';
       ref := ArrGen(paths.Length, i->
       begin
         ref_sb += paths[i];
@@ -236,6 +249,7 @@ type
     public const RMData_version = 1;
     public const RMData_ct_file: byte = 1;
     public const RMData_ct_volume: byte = 2;
+    public const RMData_ct_dir_removed: byte = 3;
     public static procedure SaveRMData(str: System.IO.Stream);
     begin
       var bw := new System.IO.BinaryWriter(str);
@@ -249,14 +263,39 @@ type
         bw.Write(f.fname.SubString(f.base_path.Length));
         bw.Write(f.weight.Value);
       end;
+      foreach var d in WeightedPath.All.Values do
+      begin
+        bw.Write(RMData_ct_dir_removed);
+        bw.Write(d.path);
+        bw.Write(d.removed.Count);
+        foreach var rem in d.removed do
+          bw.Write(rem);
+      end;
       bw.Write(RMData_ct_volume);
       bw.Write(start_volume);
       bw.Close;
     end;
-    public static procedure LoadRMData(str: System.IO.Stream);
+    public static procedure LoadRMData(RMData_file: string);
     begin
-      var br := new System.IO.BinaryReader(str);
-      var last := files;
+      
+      var loaded_files := new Dictionary<string, (string, integer)>;
+      var loaded_removed := new Dictionary<string, HashSet<string>>;
+      var loaded_start_volume := default(integer?);
+      
+      var missing_files := new List<string>;
+      
+      var br := new System.IO.BinaryReader(System.IO.File.OpenRead(RMData_file));
+      var ReadWeightedFile := procedure->
+      begin
+        var base_path := br.ReadString;
+        var fname := base_path+br.ReadString;
+        loaded_files.Add(fname, (base_path, br.ReadInt32));
+        if not FileExists(fname) then
+          missing_files += fname;
+      end;
+      
+      var ShowReadError := function(e: Exception): boolean->
+      MessageBoxResult.Yes = MessageBox.Show(e.ToString+#10#10+$'Load {loaded_files.Count} files anyway?', 'Error reading .RMData file', MessageBoxButton.YesNo);
       
       if br.ReadInt32<>-1 then
       begin
@@ -265,17 +304,11 @@ type
         
         while br.BaseStream.Position<br.BaseStream.Length do
         try
-          var base_path := br.ReadString;
-          var f := new WeightedFile(base_path, base_path+br.ReadString);
-          f.weight := br.ReadInt32;
-          lock RM.files_lock do
-            last := last.Insert(f);
+          ReadWeightedFile;
         except
           on e: Exception do
-          begin
-            MessageBox.Show(e.ToString);
-            break;
-          end;
+            if ShowReadError(e) then
+              break else exit;
         end;
         
       end else
@@ -292,36 +325,165 @@ type
             case ct of
               
               RMData_ct_file:
+              ReadWeightedFile;
+              
+              RMData_ct_dir_removed:
               begin
-                var base_path := br.ReadString;
-                var f := new WeightedFile(base_path, base_path+br.ReadString);
-                f.weight := br.ReadInt32;
-                lock RM.files_lock do
-                  last := last.Insert(f);
+                var path := br.ReadString;
+                var c := br.ReadInt32;
+                var removed := new HashSet<string>(c);
+                loop c do
+                begin
+                  var fname := br.ReadString;
+                  if FileExists(fname) then removed += fname;
+                end;
+                loaded_removed.Add(path, removed);
               end;
               
               RMData_ct_volume:
-              begin
-                start_volume := br.ReadInt32;
-                StartVolumeUpdated;
-              end;
+              loaded_start_volume := br.ReadInt32;
               
               else raise new System.InvalidOperationException($'Content type {ct} is not defined');
             end;
             
           except
             on e: Exception do
-            begin
-              MessageBox.Show(e.ToString);
-              break;
-            end;
+              if ShowReadError(e) then
+                break else exit;
           end;
           
           else raise new System.NotSupportedException($'Version {data_version} is not supported');
         end;
       end;
-      
       br.Close;
+      
+      foreach var fname in loaded_files.Keys do
+      begin
+        var (base_path, weight) := loaded_files[fname];
+        var path := System.IO.Path.GetDirectoryName(fname);
+        while not loaded_removed.ContainsKey(path+'\') do
+        begin
+          loaded_removed.Add(path+'\', new HashSet<string>);
+          if path = base_path then break;
+          path := System.IO.Path.GetDirectoryName(path);
+          if path=nil then break;
+        end;
+      end;
+      
+      var unused_files := new List<(string,string)>;
+      foreach var path in loaded_removed.Keys do
+      begin
+        var removed := loaded_removed[path];
+        foreach var fname in EnumerateFiles(path) do
+          if CheckExt(System.IO.Path.GetExtension(fname)) then
+          begin
+            if loaded_files.ContainsKey(fname) then continue;
+            if removed.Contains(fname) then continue;
+            
+            var base_path := loaded_files
+              .Where(kvp->kvp.Key.StartsWith(path))
+              .Select(kvp->kvp.Value[0])
+              .MinBy(p->p.Length)
+            ;
+            unused_files += (base_path, fname);
+          end;
+      end;
+      
+      var need_resave := false;
+      
+      var AskResave := function(title, question: string; lines: sequence of string): boolean->
+      begin
+        var sb := new StringBuilder;
+        var max_display := 10;
+        var enmr: IEnumerator<string> := lines.GetEnumerator;
+        while enmr.MoveNext do
+        begin
+          var l := enmr.Current;
+          if max_display=0 then
+          begin
+            sb.AppendLine(if enmr.MoveNext then '...' else l);
+            break;
+          end;
+          sb.AppendLine(l);
+          max_display -= 1;
+        end;
+        sb.AppendLine;
+        sb += question;
+        if MessageBoxResult.Yes = MessageBox.Show(sb.ToString, title, MessageBoxButton.YesNo) then
+        begin
+          Result := true;
+          need_resave := true;
+        end;
+      end;
+      
+      if missing_files.Count<>0 then
+        if AskResave('Missing files', 'Remove these files from .RMData?', missing_files) then
+          foreach var fname in missing_files do
+            loaded_files.Remove(fname);
+      missing_files := nil;
+      
+      if unused_files.Count<>0 then
+        if AskResave('New files', 'Add these files to .RMData?', unused_files.Select(t->t[1])) then
+          foreach var (base_path, fname) in unused_files do
+            loaded_files.Add(fname, (base_path, 1)) else
+        if AskResave('New files', 'Add these files as removed to .RMData?', unused_files.Select(t->t[1])) then
+          foreach var (base_path, fname) in unused_files do
+            loaded_removed[System.IO.Path.GetDirectoryName(fname)].Add(fname);
+      unused_files := nil;
+      
+      if need_resave then
+      begin
+        System.IO.File.Copy(RMData_file, RMData_file+'.backup', true);
+        var bw := new System.IO.BinaryWriter(System.IO.File.OpenWrite(RMData_file));
+        bw.Write(-1);
+        bw.Write(RMData_version);
+        
+        foreach var fname in loaded_files.Keys do
+        begin
+          var (base_path, weight) := loaded_files[fname];
+          bw.Write(RMData_ct_file);
+          bw.Write(base_path);
+          bw.Write(fname.Substring(base_path.Length));
+          bw.Write(weight);
+        end;
+        
+        foreach var path in loaded_removed.Keys do
+        begin
+          var removed := loaded_removed[path];
+          bw.Write(RMData_ct_dir_removed);
+          bw.Write(path);
+          bw.Write(removed.Count);
+          foreach var rem in removed do
+            bw.Write(rem);
+        end;
+        
+        if loaded_start_volume<>nil then
+        begin
+          bw.Write(RMData_ct_volume);
+          bw.Write(loaded_start_volume.Value);
+        end;
+        
+        bw.Close;
+      end;
+      
+      lock RM.files_lock do foreach var fname in loaded_files.Keys do
+      begin
+        var (base_path, weight) := loaded_files[fname];
+        var f := new WeightedFile(base_path, fname);
+        f.weight := weight;
+        RM.files := RM.files.Insert(f);
+      end;
+      
+      foreach var path in loaded_removed.Keys do
+        foreach var rem in loaded_removed[path] do
+          if not WeightedPath.All[path].TryAddRemoved(rem) then ; // Хз что делать с теми что не добавились
+      
+      if loaded_start_volume<>nil then
+      begin
+        RM.start_volume := loaded_start_volume.Value;
+        StartVolumeUpdated;
+      end;
+      
       FilesUpdated;
     end;
     
@@ -344,7 +506,7 @@ type
       
       if ext.ToUpper = '.RMData'.ToUpper then
       begin
-        LoadRMData(System.IO.File.OpenRead(name));
+        LoadRMData(name);
         exit;
       end;
       
@@ -629,14 +791,16 @@ type
       im.Source := System.Windows.Media.Imaging.BitmapFrame.Create(GetResourceStream('load.png'));
       
       self.Click += (o,e)->
-      begin
+      try
         var d := new Microsoft.Win32.OpenFileDialog;
         d.DefaultExt := '.RMData';
         d.Filter := 'RM Save data|*.RMData|All files|*';
         d.InitialDirectory := GetCurrentDir;
         var res := d.ShowDialog; //TODO #2562
         if true <> res then exit;
-        RM.LoadRMData(d.OpenFile);
+        RM.LoadRMData(d.FileName);
+      except
+        on exc: Exception do MessageBox.Show(exc.ToString);
       end;
       
     end;
@@ -1038,7 +1202,7 @@ begin
   end;
   MainWindow.Drop += (o,e)->
   lock RM.files_lock do
-  begin
+  try
     if not System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift) then
       foreach var n in RM.files.Enmr do
         n.f.Remove;
@@ -1047,6 +1211,8 @@ begin
       RM.AddName(name);
     
     e.Handled := true;
+  except
+    on exc: Exception do MessageBox.Show(e.ToString);
   end;
   
   foreach var arg in CommandLineArgs do
@@ -1069,5 +1235,6 @@ begin
   RM.FileSwitch += fname->MainWindow.Dispatcher.Invoke(()->(MainWindow.Title := fname));
   RM.StartPlaying;
   
+  MainWindow.Closed += (o,e)->Halt(0);
   Halt(Application.Create.Run(MainWindow));
 end.
