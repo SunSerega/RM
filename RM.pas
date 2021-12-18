@@ -121,9 +121,7 @@ type
     
     procedure UpdateWeight(delta: integer);
     begin
-      self.weight := (self.weight.Value + delta).Clamp(0,999);
-      if weight=0 then
-        self.Remove else
+      self.weight := (self.weight.Value + delta).Clamp(1,999);
       foreach var p in ref do
         p.weight := nil;
     end;
@@ -418,8 +416,13 @@ type
       
       if missing_files.Count<>0 then
         if AskResave('Missing files', 'Remove these files from .RMData?', missing_files) then
+        begin
           foreach var fname in missing_files do
             loaded_files.Remove(fname);
+          foreach var path in loaded_removed.Keys.ToArray do
+            if not loaded_files.Keys.Any(fname->fname.StartsWith(path)) then
+              loaded_removed.Remove(path);
+        end;
       missing_files := nil;
       
       if unused_files.Count<>0 then
@@ -434,7 +437,7 @@ type
       if need_resave then
       begin
         System.IO.File.Copy(RMData_file, RMData_file+'.backup', true);
-        var bw := new System.IO.BinaryWriter(System.IO.File.OpenWrite(RMData_file));
+        var bw := new System.IO.BinaryWriter(System.IO.File.Create(RMData_file));
         bw.Write(-1);
         bw.Write(RMData_version);
         
@@ -854,6 +857,7 @@ type
     private rel_weight_box_text := new TextBlock;
     
     public event WeightChanged: integer->();
+    public event DeleteRequested: ()->();
     public event ResetRequested: ()->();
     
     public constructor(char_set: string; name: string);
@@ -900,18 +904,48 @@ type
       rel_weight_box_g.Children.Add(rel_weight_box_text);
       rel_weight_box_text.HorizontalAlignment := System.Windows.HorizontalAlignment.Center;
       
+      var delete_button := new Button;
+      self.Children.Add(delete_button);
+      delete_button.Margin := new Thickness(0,0,5,0);
+      delete_button.Click += (o,e)->DeleteRequested();
+      begin
+          
+        var delete_button_content := new Grid;
+        delete_button.Content := delete_button_content;
+        delete_button_content.Width := 16;
+        delete_button_content.Height := 16;
+        var AddLine := procedure(x1,y1, x2,y2: real)->
+        begin
+          var l := new System.Windows.Shapes.Line;
+          delete_button_content.Children.Add(l);
+          l.Stroke := Brushes.Red;
+          l.StrokeThickness := 2;
+          l.StrokeEndLineCap := PenLineCap.Flat;
+          l.X1 := x1;
+          l.Y1 := y1;
+          l.X2 := x2;
+          l.Y2 := y2;
+        end;
+        AddLine(03,03, 13,13);
+        AddLine(03,13, 13,03);
+        
+      end;
+      
       var reset_button := new Button;
-      self.Children.Insert(2, reset_button);
+      self.Children.Add(reset_button);
       reset_button.Width := 16;
       reset_button.Height := 16;
       reset_button.Margin := new Thickness(0,0,5,0);
       reset_button.Click += (o,e)->ResetRequested();
-      
-      var reset_button_im := new System.Windows.Shapes.Rectangle;
-      reset_button.Content := reset_button_im;
-      reset_button_im.Width := 7;
-      reset_button_im.Height := 7;
-      reset_button_im.Fill := Brushes.Red;
+      begin
+        
+        var reset_button_im := new System.Windows.Shapes.Rectangle;
+        reset_button.Content := reset_button_im;
+        reset_button_im.Width := 7;
+        reset_button_im.Height := 7;
+        reset_button_im.Fill := Brushes.Red;
+        
+      end;
       
       var body_title := new TextBlock;
       self.Children.Add(body_title);
@@ -953,9 +987,12 @@ type
       header.WeightChanged += delta->
       begin
         f.UpdateWeight(delta);
-        if f.weight=nil then
-          RM.FilesUpdated else
-          RM.WeightsUpdated;
+        RM.WeightsUpdated;
+      end;
+      header.DeleteRequested += ()->
+      begin
+        f.Remove;
+        RM.FilesUpdated;
       end;
       header.ResetRequested += ()->
       begin
@@ -993,22 +1030,19 @@ type
         //TODO Если поменять parent_path - это не обновится
         title_bar := new DisplayHeader('►▼', path.path.SubString(parent_path.Length).TrimEnd('\'));
         self.Children.Add(title_bar);
+        
         title_bar.WeightChanged += delta->
         begin
-          var full_update := false;
-          var weight_update := false;
-          foreach var f in path.ref.ToArray do
-          begin
+          foreach var f in path.ref do
             f.UpdateWeight(delta);
-            if f.weight=nil then
-              full_update := true else
-              weight_update := true;
-          end;
-          if full_update then
-            RM.FilesUpdated else
-          if weight_update then
-            RM.WeightsUpdated else
-            raise new System.InvalidOperationException;
+          RM.WeightsUpdated;
+        end;
+        
+        title_bar.DeleteRequested += ()->
+        begin
+          foreach var f in path.ref.ToArray do
+            f.Remove;
+          RM.FilesUpdated;
         end;
         
         title_bar.ResetRequested += ()->
