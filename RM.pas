@@ -7,6 +7,8 @@
 
 {$region TODO}
 
+//TODO Кнопка паузы
+
 //TODO Папка должно в ref содержать все свои файлы, даже если обратного ref небыло
 // - Тогда будет нормально работать увеличение частоты при тыке
 // - А ещё можно будет не делать словарь папок-визуализаций
@@ -600,7 +602,7 @@ type
     begin
       
       var executable := GetExecStr(System.IO.Path.GetExtension(fname)).Remove(' "%1"').Remove('"');
-      var args := $'"{fname}" "--window-minimized=yes" --volume={start_volume}';
+      var args := $'"{fname}" --window-minimized=yes --volume={start_volume}';
       var proc := System.Diagnostics.Process.Start(executable, args);
       proc.WaitForExit;
       case proc.ExitCode of
@@ -772,8 +774,7 @@ type
         d.DefaultExt := '.RMData';
         d.Filter := 'RM Save data|*.RMData|All files|*';
         d.InitialDirectory := GetCurrentDir;
-        var res := d.ShowDialog; //TODO #2562
-        if true <> res then exit;
+        if true <> d.ShowDialog then exit;
         RM.SaveRMData(d.OpenFile);
       end;
       
@@ -799,8 +800,7 @@ type
         d.DefaultExt := '.RMData';
         d.Filter := 'RM Save data|*.RMData|All files|*';
         d.InitialDirectory := GetCurrentDir;
-        var res := d.ShowDialog; //TODO #2562
-        if true <> res then exit;
+        if true <> d.ShowDialog then exit;
         RM.LoadRMData(d.FileName);
       except
         on exc: Exception do MessageBox.Show(exc.ToString);
