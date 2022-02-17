@@ -578,6 +578,13 @@ type
         end;
         RM.files := curr;
         
+        if not FileExists(curr.f.fname) then
+        begin
+          Console.Beep;
+          curr.Remove;
+          continue;
+        end;
+        
         var full_fname := curr.f.fname;
         var base_path := curr.f.base_path;
         var fname := full_fname.SubString(base_path.Length+1);
