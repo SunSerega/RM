@@ -375,7 +375,7 @@ type
       begin
         var removed := loaded_removed[path];
         foreach var fname in EnumerateFiles(path) do
-          if CheckExt(System.IO.Path.GetExtension(fname)) then
+          if CheckFile(fname) then
           begin
             if loaded_files.ContainsKey(fname) then continue;
             if removed.Contains(fname) then continue;
@@ -492,30 +492,31 @@ type
       FilesUpdated;
     end;
     
-    private static function CheckExt(ext: string): boolean;
+    private static function CheckFile(fname: string): boolean;
     begin
       Result := false;
+      var ext := System.IO.Path.GetExtension(fname);
       if ext in |'.db', '.lnk', ''| then exit;
       try
-        Result := GetExecStr(ext).Contains('\mpv.exe');
+        Result := GetExecStr(fname).Contains('\mpv.exe');
       except
         on e: Exception do
-          MessageBox.Show(e.ToString, ext);
+          MessageBox.Show(e.ToString, $'{ext}: {fname}');
       end;
     end;
     public static procedure AddName(name: string) :=
     if System.IO.File.Exists(name) then
     begin
       name := name.Replace('/','\');
-      var ext := System.IO.Path.GetExtension(name);
       
+      var ext := System.IO.Path.GetExtension(name);
       if ext.ToUpper = '.RMData'.ToUpper then
       begin
         LoadRMData(name);
         exit;
       end;
       
-      if not CheckExt(ext) then exit;
+      if not CheckFile(name) then exit;
       lock files_lock do
         files.Insert(new WeightedFile(System.IO.Path.GetDirectoryName(name), name));
       
@@ -528,7 +529,7 @@ type
       var base_dir := System.IO.Path.GetDirectoryName(name.TrimEnd('\')).TrimEnd('\');
       foreach var fname in EnumerateAllFiles(name) do
       begin
-        if not CheckExt(System.IO.Path.GetExtension(fname)) then continue;
+        if not CheckFile(fname) then continue;
         lock files_lock do
           prev := prev.Insert(new WeightedFile(base_dir, fname));
       end;
@@ -538,10 +539,22 @@ type
       MessageBox.Show(name, 'Value not recognized as file/folder');
     
     public static procedure StartPlaying := System.Threading.Thread.Create(()->
-    begin
-      {$reference System.Speech.dll}
-      var speaker := new System.Speech.Synthesis.SpeechSynthesizer;
-      speaker.SetOutputToDefaultAudioDevice;
+    try
+      
+      var speak: string->();
+      try
+        {$reference System.Speech.dll}
+        var speaker := new System.Speech.Synthesis.SpeechSynthesizer;
+        speaker.SetOutputToDefaultAudioDevice;
+        speak := l->speaker.Speak(l);
+      except
+        on e: Exception do
+        begin
+          System.Media.SystemSounds.Exclamation.Play;
+          MessageBox.Show(e.ToString);
+          speak := l->exit();
+        end;
+      end;
       
       while true do
       try
@@ -590,7 +603,7 @@ type
         var fname := full_fname.SubString(base_path.Length+1);
         
         InvokeFileSwitch(fname);
-        speaker.Speak(System.IO.Path.ChangeExtension(fname,nil).Replace('\', ' - '));
+        speak(System.IO.Path.ChangeExtension(fname,nil).Replace('\', ' - '));
         
         PlayFile(full_fname);
         InvokeFileSwitch('%Switching%');
@@ -603,14 +616,34 @@ type
         end;
       end;
       
+     except
+      on e: Exception do
+      begin
+        System.Media.SystemSounds.Exclamation.Play;
+        MessageBox.Show(e.ToString);
+      end;
     end).Start;
     
     public static procedure PlayFile(fname: string);
     begin
+//      var (executable, args) := GetExecStr(fname).Split(|' '|, 2);
+//      
+//      executable := executable.Trim('"');
+//      args := args.Replace('%1', fname);
+//      args := $'{args} --window-minimized=yes --volume={start_volume}';
+//      var proc := System.Diagnostics.Process.Start(executable, args);
       
-      var executable := GetExecStr(System.IO.Path.GetExtension(fname)).Remove(' "%1"').Remove('"');
-      var args := $'"{fname}" --window-minimized=yes --volume={start_volume}';
+      var command := GetExecStr(fname).Replace('%1', fname);
+      if not command.StartsWith('"') then raise new System.NotImplementedException(command);
+      var ind := command.IndexOf('"', 1);
+      var executable := command.Substring(1, ind-1);
+      var args := $'{command.Substring(ind+1)} --window-minimized=yes --volume={start_volume}';
       var proc := System.Diagnostics.Process.Start(executable, args);
+      
+//      command := $'/C {command} --window-minimized=yes --volume={start_volume}';
+//      MessageBox.Show(command);
+//      var proc := System.Diagnostics.Process.Start('CMD.exe', command);
+      
       proc.WaitForExit;
       case proc.ExitCode of
         0: exit;
@@ -950,7 +983,7 @@ type
         reset_button.Content := reset_button_im;
         reset_button_im.Width := 7;
         reset_button_im.Height := 7;
-        reset_button_im.Fill := Brushes.Red;
+        reset_button_im.Fill := Brushes.Blue;
         
       end;
       
@@ -1272,6 +1305,8 @@ begin
 //  RM.AddName('C:\0Music\2Special\Perturbator\The Uncanny Valley');
 //  RM.files.Enmr.First.f.Remove;
 //  RM.AddName('C:\0Music\2Special\Perturbator\The Uncanny Valley');
+  
+//  RM.AddName('Z:/home/sun_linux/Mounts/General\0Music\2Special\Perturbator\The Uncanny Valley');
   
   RM.FileSwitch += fname->MainWindow.Dispatcher.Invoke(()->(MainWindow.Title := fname));
   RM.StartPlaying;
