@@ -1,4 +1,4 @@
-﻿{$mainresource 'RM.res'}
+﻿{$mainresource RM.res}
 
 {$reference PresentationFramework.dll}
 {$reference PresentationCore.dll}
@@ -603,7 +603,10 @@ type
         var fname := full_fname.SubString(base_path.Length+1);
         
         InvokeFileSwitch(fname);
-        speak(System.IO.Path.ChangeExtension(fname,nil).Replace('\', ' - '));
+        var to_speak := System.IO.Path.ChangeExtension(fname,nil).Replace('\', ' - ');
+        if to_speak.MatchValue('^\[\d+\]') is string(var m) then
+          to_speak := to_speak.Substring(m.Length).Trim;
+        speak(to_speak);
         
         PlayFile(full_fname);
         InvokeFileSwitch('%Switching%');

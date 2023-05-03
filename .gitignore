@@ -1,4 +1,5 @@
-*.pcu
+﻿*.pcu
 *.pdb
+*.exe
 *.RMData
 *.backup
